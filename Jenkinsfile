@@ -30,7 +30,6 @@ pipeline {
                     docker --version
                     aws --version
                     kubectl version --client
-                    ansible --version
                 '''
             }
         }
@@ -68,7 +67,6 @@ pipeline {
                 dir('bookmyshow-app') {
                     sh '''
                         set -e
-                        # Fix for Node.js v17+ / v22 OpenSSL cryptographic compatibility with older Webpack
                         export NODE_OPTIONS=--openssl-legacy-provider
                         DISABLE_ESLINT_PLUGIN=true ESLINT_NO_DEV_ERRORS=true CI=false npm run build
                     '''
@@ -165,10 +163,12 @@ pipeline {
             steps {
                 sh '''
                     set -e
+                    
+                    # Ensure namespace exists
+                    kubectl create namespace bms-stage --dry-run=client -o yaml | kubectl apply -f -
 
-                    ansible-playbook ansible/deploy.yml \
-                      -e target_environment=stage \
-                      -e image_uri="$IMAGE_URI"
+                    # Update image in deployment and apply
+                    kubectl set image deployment/bookmyshow bookmyshow="$IMAGE_URI" -n bms-stage --local -o yaml | kubectl apply -f -
                 '''
             }
         }
@@ -191,10 +191,12 @@ pipeline {
             steps {
                 sh '''
                     set -e
+                    
+                    # Ensure namespace exists
+                    kubectl create namespace bms-prod --dry-run=client -o yaml | kubectl apply -f -
 
-                    ansible-playbook ansible/deploy.yml \
-                      -e target_environment=prod \
-                      -e image_uri="$IMAGE_URI"
+                    # Update image in deployment and apply for production
+                    kubectl set image deployment/bookmyshow bookmyshow="$IMAGE_URI" -n bms-prod --local -o yaml | kubectl apply -f -
                 '''
             }
         }
