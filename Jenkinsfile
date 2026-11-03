@@ -167,8 +167,13 @@ pipeline {
                     # Ensure namespace exists
                     kubectl create namespace bms-stage --dry-run=client -o yaml | kubectl apply -f -
 
-                    # Update image in deployment and apply
-                    kubectl set image deployment/bookmyshow bookmyshow="$IMAGE_URI" -n bms-stage --local -o yaml | kubectl apply -f -
+                    # Check if deployment exists; if not, create a baseline deployment so update works smoothly
+                    if ! kubectl get deployment bookmyshow -n bms-stage >/dev/null 2>&1; then
+                        kubectl create deployment bookmyshow --image="$IMAGE_URI" -n bms-stage
+                        kubectl scale deployment bookmyshow --replicas=1 -n bms-stage
+                    else
+                        kubectl set image deployment/bookmyshow bookmyshow="$IMAGE_URI" -n bms-stage
+                    fi
                 '''
             }
         }
@@ -195,8 +200,13 @@ pipeline {
                     # Ensure namespace exists
                     kubectl create namespace bms-prod --dry-run=client -o yaml | kubectl apply -f -
 
-                    # Update image in deployment and apply for production
-                    kubectl set image deployment/bookmyshow bookmyshow="$IMAGE_URI" -n bms-prod --local -o yaml | kubectl apply -f -
+                    # Check if production deployment exists; if not, create it
+                    if ! kubectl get deployment bookmyshow -n bms-prod >/dev/null 2>&1; then
+                        kubectl create deployment bookmyshow --image="$IMAGE_URI" -n bms-prod
+                        kubectl scale deployment bookmyshow --replicas=1 -n bms-prod
+                    else
+                        kubectl set image deployment/bookmyshow bookmyshow="$IMAGE_URI" -n bms-prod
+                    fi
                 '''
             }
         }
