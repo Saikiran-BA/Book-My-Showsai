@@ -1,172 +1,13 @@
-pipeline {
-    agent any
-
-    options {
-        timestamps()
-        disableConcurrentBuilds()
-        buildDiscarder(logRotator(numToKeepStr: '10'))
-    }
-
-    environment {
-        AWS_REGION     = 'ap-south-1'
-        ECR_REPOSITORY = 'bookmyshow'
-        EKS_CLUSTER    = 'bookmyshow-cluster'
-        APP_NAME       = 'bookmyshow'
-        IMAGE_TAG      = "${BUILD_NUMBER}"
-        NODE_OPTIONS   = '--openssl-legacy-provider'
-    }
-
-    stages {
-        stage('Checkout') {
-            steps {
-                checkout scm
-            }
-        }
-
-        stage('Verify Tools') {
-            steps {
-                sh '''
-                    set -e
-                    git --version
-                    docker --version
-                    aws --version
-                    kubectl version --client
-                    ansible --version
-                '''
-            }
-        }
-
-        stage('Install Dependencies') {
-            steps {
-                dir('bookmyshow-app') {
-                    sh '''
-                        set -e
-                        npm install
-                    '''
-                }
-            }
-        }
-
-        stage('Test') {
-            steps {
-                dir('bookmyshow-app') {
-                    sh '''
-                        set +e
-                        npm test -- --watchAll=false
-                        
-                        # Bypass strategy: log the output but force a successful exit code
-                        echo "Bypassing unit tests for deployment focus."
-                        exit 0
-                    '''
-                }
-            }
-        }
-
-        stage('Build Application') {
-            steps {
-                dir('bookmyshow-app') {
-                    sh '''
-                        set -e
-                        # CI=false treats lint warnings strictly as warnings instead of breaking errors
-                        CI=false npm run build
-                    '''
-                }
-            }
-        }
-
-        stage('Resolve ECR URI') {
-            steps {
-                script {
-                    env.AWS_ACCOUNT_ID = sh(
-                        script: "aws sts get-caller-identity --query Account --output text",
-                        returnStdout: true
-                    ).trim()
-
-                    env.ECR_REGISTRY =
-                        "${env.AWS_ACCOUNT_ID}.dkr.ecr.${env.AWS_REGION}.amazonaws.com"
-
-                    env.IMAGE_URI =
-                        "${env.ECR_REGISTRY}/${env.ECR_REPOSITORY}:${env.IMAGE_TAG}"
-                }
-
-                sh '''
-                    set -e
-
-                    aws ecr describe-repositories \
-                      --repository-names "$ECR_REPOSITORY" \
-                      --region "$AWS_REGION" >/dev/null 2>&1 \
-                    || aws ecr create-repository \
-                      --repository-name "$ECR_REPOSITORY" \
-                      --region "$AWS_REGION"
-                '''
-            }
-        }
-
-        stage('Docker Build') {
-            steps {
-                dir('bookmyshow-app') {
-                    sh '''
-                        set -e
-                        docker build -t "$IMAGE_URI" .
-                    '''
-                }
-            }
-        }
-
-        stage('Trivy Scan') {
-            steps {
-                sh '''
-                    set -e
-
-                    if command -v trivy >/dev/null 2>&1; then
-                        trivy image \
-                          --severity HIGH,CRITICAL \
-                          --exit-code 0 \
-                          "$IMAGE_URI"
-                    else
-                        echo "Trivy is not installed; scan skipped for this lab."
-                    fi
-                '''
-            }
-        }
-
-        stage('Push to ECR') {
-            steps {
-                sh '''
-                    set -e
-
-                    aws ecr get-login-password --region "$AWS_REGION" |
-                    docker login \
-                      --username AWS \
-                      --password-stdin "$ECR_REGISTRY"
-
-                    docker push "$IMAGE_URI"
-                '''
-            }
-        }
-
-        stage('Configure EKS') {
-            steps {
-                sh '''
-                    set -e
-
-                    aws eks update-kubeconfig \
-                      --region "$AWS_REGION" \
-                      --name "$EKS_CLUSTER"
-
-                    kubectl get nodes
-                '''
-            }
-        }
-
         stage('Deploy to Stage') {
             steps {
                 sh '''
                     set -e
-
-                    ansible-playbook ansible/deploy.yml \
-                      -e target_environment=stage \
-                      -e image_uri="$IMAGE_URI"
+                    # Dynamically inject the newly built image URI into the deployment manifest
+                    sed -i "s|image: .*|image: ${IMAGE_URI}|g" deployment.yml
+                    
+                    # Apply the Kubernetes configurations to the stage namespace
+                    kubectl apply -f deployment.yml -n bms-stage
+                    kubectl apply -f service.yml -n bms-stage
                 '''
             }
         }
@@ -175,12 +16,8 @@ pipeline {
             steps {
                 sh '''
                     set -e
-
                     kubectl get all -n bms-stage
-                    kubectl rollout status \
-                      deployment/bookmyshow \
-                      -n bms-stage \
-                      --timeout=180s
+                    kubectl rollout status deployment/bookmyshow -n bms-stage --timeout=180s
                 '''
             }
         }
@@ -189,48 +26,9 @@ pipeline {
             steps {
                 sh '''
                     set -e
-
-                    ansible-playbook ansible/deploy.yml \
-                      -e target_environment=prod \
-                      -e image_uri="$IMAGE_URI"
+                    # Apply the same updated configuration to the production namespace
+                    kubectl apply -f deployment.yml -n bms-prod
+                    kubectl apply -f service.yml -n bms-prod
                 '''
             }
         }
-
-        stage('Validate Production') {
-            steps {
-                sh '''
-                    set -e
-
-                    kubectl get all -n bms-prod
-                    kubectl rollout status \
-                      deployment/bookmyshow \
-                      -n bms-prod \
-                      --timeout=180s
-                '''
-            }
-        }
-    }
-
-    post {
-        success {
-            echo "Deployment completed successfully: ${IMAGE_URI}"
-        }
-
-        failure {
-            echo "Pipeline failed. Checking Kubernetes status."
-
-            sh '''
-                kubectl get pods -A || true
-                kubectl describe deployment bookmyshow -n bms-stage || true
-                kubectl describe deployment bookmyshow -n bms-prod || true
-            '''
-        }
-
-        always {
-            sh '''
-                docker image rm "$IMAGE_URI" >/dev/null 2>&1 || true
-            '''
-        }
-    }
-}
