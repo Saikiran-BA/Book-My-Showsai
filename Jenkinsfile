@@ -13,6 +13,8 @@ pipeline {
         EKS_CLUSTER    = 'bookmyshow-cluster'
         APP_NAME       = 'bookmyshow'
         IMAGE_TAG      = "${BUILD_NUMBER}"
+        // Bypasses OpenSSL 3.0 compilation errors with legacy crypto support
+        NODE_OPTIONS   = '--openssl-legacy-provider'
     }
 
     stages {
@@ -40,7 +42,7 @@ pipeline {
                 dir('bookmyshow-app') {
                     sh '''
                         set -e
-                        npm ci
+                        npm install
                     '''
                 }
             }
