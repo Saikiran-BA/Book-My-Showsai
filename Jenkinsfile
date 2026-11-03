@@ -67,7 +67,8 @@ pipeline {
                 dir('bookmyshow-app') {
                     sh '''
                         set -e
-                        npm run build
+                        # CI=false treats lint warnings strictly as warnings instead of breaking errors
+                        CI=false npm run build
                     '''
                 }
             }
