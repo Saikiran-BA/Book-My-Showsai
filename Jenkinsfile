@@ -2,10 +2,10 @@
             steps {
                 sh '''
                     set -e
-                    # Dynamically inject the newly built image URI into the deployment manifest
+                    # Update image tag inside manifest
                     sed -i "s|image: .*|image: ${IMAGE_URI}|g" deployment.yml
                     
-                    # Apply the Kubernetes configurations to the stage namespace
+                    # Apply configurations to bms-stage
                     kubectl apply -f deployment.yml -n bms-stage
                     kubectl apply -f service.yml -n bms-stage
                 '''
@@ -26,9 +26,19 @@
             steps {
                 sh '''
                     set -e
-                    # Apply the same updated configuration to the production namespace
+                    # Apply identical manifest config to bms-prod
                     kubectl apply -f deployment.yml -n bms-prod
                     kubectl apply -f service.yml -n bms-prod
+                '''
+            }
+        }
+
+        stage('Validate Production') {
+            steps {
+                sh '''
+                    set -e
+                    kubectl get all -n bms-prod
+                    kubectl rollout status deployment/bookmyshow -n bms-prod --timeout=180s
                 '''
             }
         }
