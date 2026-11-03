@@ -40,6 +40,8 @@ pipeline {
                 dir('bookmyshow-app') {
                     sh '''
                         set -e
+                        # If you encounter lock file mismatch errors locally/in CI, 
+                        # ensure package-lock.json is synchronized by running 'npm install' locally and committing it.
                         npm ci
                     '''
                 }
@@ -68,6 +70,7 @@ pipeline {
                 dir('bookmyshow-app') {
                     sh '''
                         set -e
+                        # Sets CI flags to prevent warnings from failing the production build
                         DISABLE_ESLINT_PLUGIN=true ESLINT_NO_DEV_ERRORS=true CI=false npm run build
                     '''
                 }
