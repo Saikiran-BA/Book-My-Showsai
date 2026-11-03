@@ -68,6 +68,8 @@ pipeline {
                 dir('bookmyshow-app') {
                     sh '''
                         set -e
+                        # Fix for Node.js v17+ / v22 OpenSSL cryptographic compatibility with older Webpack
+                        export NODE_OPTIONS=--openssl-legacy-provider
                         DISABLE_ESLINT_PLUGIN=true ESLINT_NO_DEV_ERRORS=true CI=false npm run build
                     '''
                 }
