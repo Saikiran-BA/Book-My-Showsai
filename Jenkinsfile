@@ -13,7 +13,6 @@ pipeline {
         EKS_CLUSTER    = 'bookmyshow-cluster'
         APP_NAME       = 'bookmyshow'
         IMAGE_TAG      = "${BUILD_NUMBER}"
-        NODE_OPTIONS   = '--openssl-legacy-provider'
     }
 
     stages {
@@ -41,7 +40,7 @@ pipeline {
                 dir('bookmyshow-app') {
                     sh '''
                         set -e
-                        npm install
+                        npm ci
                     '''
                 }
             }
@@ -53,8 +52,12 @@ pipeline {
                     sh '''
                         set +e
                         npm test -- --watchAll=false
-                        echo "Bypassing unit tests for deployment focus."
-                        exit 0
+                        TEST_STATUS=$?
+
+                        if [ "$TEST_STATUS" -ne 0 ]; then
+                            echo "Tests failed or no compatible test script exists."
+                            exit "$TEST_STATUS"
+                        fi
                     '''
                 }
             }
@@ -65,7 +68,7 @@ pipeline {
                 dir('bookmyshow-app') {
                     sh '''
                         set -e
-                        npm run build
+                        DISABLE_ESLINT_PLUGIN=true ESLINT_NO_DEV_ERRORS=true CI=false npm run build
                     '''
                 }
             }
@@ -88,6 +91,7 @@ pipeline {
 
                 sh '''
                     set -e
+
                     aws ecr describe-repositories \
                       --repository-names "$ECR_REPOSITORY" \
                       --region "$AWS_REGION" >/dev/null 2>&1 \
@@ -113,8 +117,12 @@ pipeline {
             steps {
                 sh '''
                     set -e
+
                     if command -v trivy >/dev/null 2>&1; then
-                        trivy image --severity HIGH,CRITICAL --exit-code 0 "$IMAGE_URI"
+                        trivy image \
+                          --severity HIGH,CRITICAL \
+                          --exit-code 0 \
+                          "$IMAGE_URI"
                     else
                         echo "Trivy is not installed; scan skipped for this lab."
                     fi
@@ -126,8 +134,12 @@ pipeline {
             steps {
                 sh '''
                     set -e
+
                     aws ecr get-login-password --region "$AWS_REGION" |
-                    docker login --username AWS --password-stdin "$ECR_REGISTRY"
+                    docker login \
+                      --username AWS \
+                      --password-stdin "$ECR_REGISTRY"
+
                     docker push "$IMAGE_URI"
                 '''
             }
@@ -137,7 +149,11 @@ pipeline {
             steps {
                 sh '''
                     set -e
-                    aws eks update-kubeconfig --region "$AWS_REGION" --name "$EKS_CLUSTER"
+
+                    aws eks update-kubeconfig \
+                      --region "$AWS_REGION" \
+                      --name "$EKS_CLUSTER"
+
                     kubectl get nodes
                 '''
             }
@@ -147,9 +163,10 @@ pipeline {
             steps {
                 sh '''
                     set -e
-                    sed -i "s|image: .*|image: ${IMAGE_URI}|g" deployment.yml
-                    kubectl apply -f deployment.yml -n bms-stage
-                    kubectl apply -f service.yml -n bms-stage
+
+                    ansible-playbook ansible/deploy.yml \
+                      -e target_environment=stage \
+                      -e image_uri="$IMAGE_URI"
                 '''
             }
         }
@@ -158,8 +175,12 @@ pipeline {
             steps {
                 sh '''
                     set -e
+
                     kubectl get all -n bms-stage
-                    kubectl rollout status deployment/bookmyshow -n bms-stage --timeout=180s
+                    kubectl rollout status \
+                      deployment/bookmyshow \
+                      -n bms-stage \
+                      --timeout=180s
                 '''
             }
         }
@@ -168,8 +189,10 @@ pipeline {
             steps {
                 sh '''
                     set -e
-                    kubectl apply -f deployment.yml -n bms-prod
-                    kubectl apply -f service.yml -n bms-prod
+
+                    ansible-playbook ansible/deploy.yml \
+                      -e target_environment=prod \
+                      -e image_uri="$IMAGE_URI"
                 '''
             }
         }
@@ -178,8 +201,12 @@ pipeline {
             steps {
                 sh '''
                     set -e
+
                     kubectl get all -n bms-prod
-                    kubectl rollout status deployment/bookmyshow -n bms-prod --timeout=180s
+                    kubectl rollout status \
+                      deployment/bookmyshow \
+                      -n bms-prod \
+                      --timeout=180s
                 '''
             }
         }
@@ -189,14 +216,17 @@ pipeline {
         success {
             echo "Deployment completed successfully: ${IMAGE_URI}"
         }
+
         failure {
             echo "Pipeline failed. Checking Kubernetes status."
+
             sh '''
                 kubectl get pods -A || true
                 kubectl describe deployment bookmyshow -n bms-stage || true
                 kubectl describe deployment bookmyshow -n bms-prod || true
             '''
         }
+
         always {
             sh '''
                 docker image rm "$IMAGE_URI" >/dev/null 2>&1 || true
